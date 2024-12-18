@@ -5,8 +5,6 @@ import requests
 import re
 from datetime import datetime
 from fpdf import FPDF
-import xml.etree.ElementTree as ET
-from xml.dom import minidom
 
 app = FastAPI()
 
@@ -17,39 +15,31 @@ class ViesVatChecker:
     def clean_vat_number(self, vat_number):
         return re.sub(r'[^A-Z0-9]', '', vat_number.upper())
     
-    def prettify_xml(self, xml_string):
-        """Format XML string with proper indentation"""
-        try:
-            parsed = minidom.parseString(xml_string)
-            return parsed.toprettyxml(indent="  ")
-        except:
-            return xml_string
-    
     def parse_vies_response(self, xml_text):
         try:
-            xml_text = re.sub(' xmlns="[^"]+"', '', xml_text)
-            root = ET.fromstring(xml_text)
-            
-            response = root.find('.//checkVatResponse')
-            if response is None:
-                return False, "Unable to process VIES response"
-            
-            valid = response.find('valid')
-            name = response.find('name')
-            address = response.find('address')
-            
-            if valid is not None and valid.text.lower() == 'true':
-                details = "VAT number is active"
-                if name is not None and name.text:
-                    details += f"\nName: {name.text}"
-                if address is not None and address.text:
-                    details += f"\nAddress: {address.text}"
-                return True, details
-            else:
-                return False, "VAT number is not active"
+            # Check for validity using regex that handles namespaces
+            valid_match = re.search(r'<\w*:?valid>(true|false)</\w*:?valid>', xml_text, re.IGNORECASE)
+            if not valid_match:
+                return False, "Could not determine VAT number status"
                 
-        except ET.ParseError:
-            return False, "Error processing VIES response"
+            is_valid = valid_match.group(1).lower() == 'true'
+            
+            # Extract other details
+            name_match = re.search(r'<\w*:?name>(.*?)</\w*:?name>', xml_text, re.DOTALL)
+            address_match = re.search(r'<\w*:?address>(.*?)</\w*:?address>', xml_text, re.DOTALL)
+            
+            details = []
+            details.append("VAT number is active" if is_valid else "VAT number is not active")
+            
+            if name_match:
+                details.append(f"Name: {name_match.group(1).strip()}")
+            if address_match:
+                details.append(f"Address: {address_match.group(1).strip()}")
+                
+            return is_valid, "\n".join(details)
+            
+        except Exception as e:
+            return False, f"Error processing response: {str(e)}"
     
     def check_vat(self, country_code, vat_number):
         cleaned_vat = self.clean_vat_number(vat_number)
@@ -75,11 +65,8 @@ class ViesVatChecker:
         try:
             response = requests.post(self.api_url, headers=headers, data=soap_request)
             response.raise_for_status()
-            
-            # Store both request and response for logging
-            self.last_request = self.prettify_xml(soap_request)
-            self.last_response = self.prettify_xml(response.text)
-            
+            self.last_request = soap_request
+            self.last_response = response.text
             return self.parse_vies_response(response.text)
                 
         except requests.RequestException as e:
@@ -100,29 +87,31 @@ class ViesVatChecker:
         pdf.cell(0, 10, f'VAT Number: {vat_number}', 0, 1)
         pdf.cell(0, 10, f'Status: {("Active" if is_valid else "Not active")}', 0, 1)
         
-        # Response details
+        # Company details
+        pdf.ln(5)
         for line in message.split('\n'):
-            pdf.cell(0, 10, line, 0, 1)
+            if line.strip():
+                pdf.cell(0, 8, line.strip(), 0, 1)
         
         # API Communication Log
         pdf.ln(10)
-        pdf.cell(0, 10, 'API Communication Log', 0, 1, 'L')
-        pdf.ln(5)
-        
-        # Set smaller font for XML
-        pdf.set_font('Courier', '', 8)
+        pdf.cell(0, 10, 'API Communication Log', 0, 1)
         
         # SOAP Request
-        pdf.cell(0, 10, 'SOAP Request:', 0, 1)
-        for line in self.last_request.split('\n'):
-            pdf.cell(0, 5, line.rstrip(), 0, 1)
-            
-        pdf.ln(5)
+        pdf.set_font('Courier', '', 8)
+        pdf.cell(0, 8, 'SOAP Request:', 0, 1)
+        request_lines = self.last_request.strip().split('\n')
+        for line in request_lines:
+            if line.strip():
+                pdf.cell(0, 4, line.strip(), 0, 1)
         
         # SOAP Response
-        pdf.cell(0, 10, 'SOAP Response:', 0, 1)
-        for line in self.last_response.split('\n'):
-            pdf.cell(0, 5, line.rstrip(), 0, 1)
+        pdf.ln(5)
+        pdf.cell(0, 8, 'SOAP Response:', 0, 1)
+        response_lines = self.last_response.strip().split('\n')
+        for line in response_lines:
+            if line.strip():
+                pdf.cell(0, 4, line.strip(), 0, 1)
         
         return pdf.output(dest='S').encode('latin-1')
 
