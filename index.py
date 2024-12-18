@@ -232,81 +232,97 @@ async def get_form():
             </div>
         </div>
 
-        <script>
-            document.getElementById('vatForm').addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const formData = new FormData(e.target);
-                const debugLog = document.getElementById('debugLog');
-                const debugLogContent = document.getElementById('debugLogContent');
-                
-                try {
-                    const response = await fetch('/check-vat', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const contentType = response.headers.get('content-type');
-                    const resultDiv = document.getElementById('result');
-                    const resultMessage = document.getElementById('resultMessage');
-                    resultDiv.className = 'mb-4';
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        debugLog.classList.remove('hidden');
-                        debugLogContent.textContent = JSON.stringify({
-                            status: response.status,
-                            statusText: response.statusText,
-                            error: errorData
-                        }, null, 2);
-                        
-                        resultDiv.className = 'mb-4 bg-red-100';
-                        resultMessage.textContent = errorData.message || 'An error occurred while verifying the VAT number.';
-                        return;
-                    }
-                    
-                    if (contentType && contentType.includes('application/pdf')) {
-                        const blob = await response.blob();
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        
-                        const contentDisposition = response.headers.get('Content-Disposition');
-                        const filenameMatch = contentDisposition && contentDisposition.match(/filename="(.+)"/);
-                        const filename = filenameMatch ? filenameMatch[1] : 'vat_verification.pdf';
-                        
-                        a.download = filename;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        window.URL.revokeObjectURL(url);
-                        
-                        resultDiv.className = 'mb-4 bg-green-100';
-                        resultMessage.textContent = 'VAT number is active. Downloading verification report...';
-                        debugLog.classList.add('hidden');
-                    } else {
-                        const data = await response.json();
-                        resultDiv.className = 'mb-4 bg-red-100';
-                        resultMessage.textContent = data.message;
-                        
-                        // Show JSON response in debug log
-                        debugLog.classList.remove('hidden');
-                        debugLogContent.textContent = JSON.stringify(data, null, 2);
-                    }
-                } catch (error) {
-                    console.error('Error:', error);
-                    const resultDiv = document.getElementById('result');
-                    const resultMessage = document.getElementById('resultMessage');
-                    resultDiv.className = 'mb-4 bg-red-100';
-                    resultMessage.textContent = 'An error occurred while verifying the VAT number.';
-                    
-                    debugLog.classList.remove('hidden');
-                    debugLogContent.textContent = JSON.stringify({
-                        error: error.toString(),
-                        stack: error.stack
-                    }, null, 2);
-                }
+       <script>
+    document.getElementById('vatForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const debugLog = document.getElementById('debugLog');
+        const debugLogContent = document.getElementById('debugLogContent');
+        const resultDiv = document.getElementById('result');
+        const resultMessage = document.getElementById('resultMessage');
+        
+        try {
+            const response = await fetch('/check-vat', {
+                method: 'POST',
+                body: formData
             });
-        </script>
+            
+            const contentType = response.headers.get('content-type');
+            resultDiv.className = 'mb-4';
+            
+            // Próbujemy przeczytać odpowiedź jako tekst
+            const responseText = await response.text();
+            
+            // Próbujemy sparsować jako JSON tylko jeśli to faktycznie JSON
+            let responseData;
+            if (contentType && contentType.includes('application/json')) {
+                try {
+                    responseData = JSON.parse(responseText);
+                } catch (jsonError) {
+                    throw new Error('Invalid JSON response from server');
+                }
+            }
+            
+            if (!response.ok) {
+                debugLog.classList.remove('hidden');
+                debugLogContent.textContent = JSON.stringify({
+                    status: response.status,
+                    statusText: response.statusText,
+                    response: responseText,
+                    contentType: contentType
+                }, null, 2);
+                
+                resultDiv.className = 'mb-4 bg-red-100';
+                resultMessage.textContent = responseData?.message || 'An error occurred while verifying the VAT number.';
+                return;
+            }
+            
+            if (contentType && contentType.includes('application/pdf')) {
+                // Konwertuj odpowiedź tekstową z powrotem na blob dla PDF
+                const blob = new Blob([responseText], { type: 'application/pdf' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                
+                const contentDisposition = response.headers.get('Content-Disposition');
+                const filenameMatch = contentDisposition && contentDisposition.match(/filename="(.+)"/);
+                const filename = filenameMatch ? filenameMatch[1] : 'vat_verification.pdf';
+                
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                
+                resultDiv.className = 'mb-4 bg-green-100';
+                resultMessage.textContent = 'VAT number is active. Downloading verification report...';
+                debugLog.classList.add('hidden');
+            } else {
+                if (responseData) {
+                    resultDiv.className = 'mb-4 bg-red-100';
+                    resultMessage.textContent = responseData.message;
+                    
+                    // Pokaż pełną odpowiedź w debug log
+                    debugLog.classList.remove('hidden');
+                    debugLogContent.textContent = JSON.stringify(responseData, null, 2);
+                } else {
+                    throw new Error('Unexpected response type from server');
+                }
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            resultDiv.className = 'mb-4 bg-red-100';
+            resultMessage.textContent = 'An error occurred while verifying the VAT number.';
+            
+            debugLog.classList.remove('hidden');
+            debugLogContent.textContent = JSON.stringify({
+                error: error.toString(),
+                stack: error.stack,
+                message: 'Client-side error occurred'
+            }, null, 2);
+        }
+    });
+</script>
     </body>
     </html>
     """)
