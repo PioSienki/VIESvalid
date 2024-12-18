@@ -5,6 +5,7 @@ import requests
 import re
 from datetime import datetime
 from fpdf import FPDF
+import xml.etree.ElementTree as ET
 
 app = FastAPI()
 
@@ -14,6 +15,36 @@ class ViesVatChecker:
         
     def clean_vat_number(self, vat_number):
         return re.sub(r'[^A-Z0-9]', '', vat_number.upper())
+    
+    def parse_vies_response(self, xml_text):
+        """Parsuje odpowiedź XML z VIES i zwraca szczegóły."""
+        try:
+            # Usuń namespace dla łatwiejszego parsowania
+            xml_text = re.sub(' xmlns="[^"]+"', '', xml_text)
+            root = ET.fromstring(xml_text)
+            
+            # Znajdź element checkVatResponse
+            response = root.find('.//checkVatResponse')
+            if response is None:
+                return False, "Nie można przetworzyć odpowiedzi z VIES"
+            
+            # Pobierz wartości
+            valid = response.find('valid')
+            name = response.find('name')
+            address = response.find('address')
+            
+            if valid is not None and valid.text.lower() == 'true':
+                details = "Numer VAT jest aktywny"
+                if name is not None and name.text:
+                    details += f"\nNazwa: {name.text}"
+                if address is not None and address.text:
+                    details += f"\nAdres: {address.text}"
+                return True, details
+            else:
+                return False, "Numer VAT jest nieaktywny"
+                
+        except ET.ParseError:
+            return False, "Błąd przetwarzania odpowiedzi z VIES"
     
     def check_vat(self, country_code, vat_number):
         cleaned_vat = self.clean_vat_number(vat_number)
@@ -40,12 +71,8 @@ class ViesVatChecker:
             response = requests.post(self.api_url, headers=headers, data=soap_request)
             response.raise_for_status()
             
-            if "valid>true</valid" in response.text:
-                return True, "Numer VAT jest aktywny"
-            elif "valid>false</valid" in response.text:
-                return False, "Numer VAT jest nieaktywny"
-            else:
-                return False, "Nie można zweryfikować numeru VAT"
+            # Parsowanie odpowiedzi XML
+            return self.parse_vies_response(response.text)
                 
         except requests.RequestException as e:
             return False, f"Błąd połączenia z API: {str(e)}"
@@ -62,7 +89,11 @@ class ViesVatChecker:
         pdf.cell(0, 10, f'Kraj: {country_code}', 0, 1)
         pdf.cell(0, 10, f'Numer VAT: {vat_number}', 0, 1)
         pdf.cell(0, 10, f'Status: {("Aktywny" if is_valid else "Nieaktywny")}', 0, 1)
-        pdf.cell(0, 10, 'Informacja: ' + ('Numer VAT jest aktywny' if is_valid else 'Numer VAT jest nieaktywny'), 0, 1)
+        
+        # Dodaj informacje szczegółowe z zachowaniem polskich znaków
+        # Podziel wiadomość na linie i dodaj każdą osobno
+        for line in message.split('\n'):
+            pdf.cell(0, 10, line, 0, 1)
         
         return pdf.output(dest='S').encode('latin-1')
 
