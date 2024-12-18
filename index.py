@@ -1,10 +1,11 @@
 # index.py
 from fastapi import FastAPI, Form, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import requests
 import re
 from datetime import datetime
 from fpdf import FPDF
+import textwrap
 
 app = FastAPI()
 
@@ -17,14 +18,12 @@ class ViesVatChecker:
     
     def parse_vies_response(self, xml_text):
         try:
-            # Check for validity using regex that handles namespaces
             valid_match = re.search(r'<\w*:?valid>(true|false)</\w*:?valid>', xml_text, re.IGNORECASE)
             if not valid_match:
                 return False, "Could not determine VAT number status"
                 
             is_valid = valid_match.group(1).lower() == 'true'
             
-            # Extract other details
             name_match = re.search(r'<\w*:?name>(.*?)</\w*:?name>', xml_text, re.DOTALL)
             address_match = re.search(r'<\w*:?address>(.*?)</\w*:?address>', xml_text, re.DOTALL)
             
@@ -74,6 +73,7 @@ class ViesVatChecker:
 
     def generate_pdf_report(self, country_code, vat_number, is_valid, message):
         pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
         pdf.set_font('Arial', '', 12)
         
@@ -85,7 +85,7 @@ class ViesVatChecker:
         pdf.cell(0, 10, f'Check Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1)
         pdf.cell(0, 10, f'Country: {country_code}', 0, 1)
         pdf.cell(0, 10, f'VAT Number: {vat_number}', 0, 1)
-        pdf.cell(0, 10, f'Status: {("Active" if is_valid else "Not active")}', 0, 1)
+        pdf.cell(0, 10, f'Status: Active', 0, 1)
         
         # Company details
         pdf.ln(5)
@@ -97,21 +97,25 @@ class ViesVatChecker:
         pdf.ln(10)
         pdf.cell(0, 10, 'API Communication Log', 0, 1)
         
-        # SOAP Request
+        # SOAP Request with word wrapping
         pdf.set_font('Courier', '', 8)
         pdf.cell(0, 8, 'SOAP Request:', 0, 1)
         request_lines = self.last_request.strip().split('\n')
         for line in request_lines:
             if line.strip():
-                pdf.cell(0, 4, line.strip(), 0, 1)
+                wrapped_lines = textwrap.wrap(line.strip(), width=120)  # Adjust width as needed
+                for wrapped_line in wrapped_lines:
+                    pdf.cell(0, 4, wrapped_line, 0, 1)
         
-        # SOAP Response
+        # SOAP Response with word wrapping
         pdf.ln(5)
         pdf.cell(0, 8, 'SOAP Response:', 0, 1)
         response_lines = self.last_response.strip().split('\n')
         for line in response_lines:
             if line.strip():
-                pdf.cell(0, 4, line.strip(), 0, 1)
+                wrapped_lines = textwrap.wrap(line.strip(), width=120)  # Adjust width as needed
+                for wrapped_line in wrapped_lines:
+                    pdf.cell(0, 4, wrapped_line, 0, 1)
         
         return pdf.output(dest='S').encode('latin-1')
 
@@ -130,7 +134,12 @@ async def get_form():
         <div class="container mx-auto px-4 py-8">
             <div class="max-w-md mx-auto bg-white rounded-lg shadow-md p-6">
                 <h1 class="text-2xl font-bold mb-6 text-center">VAT Number Verification - VIES System</h1>
-                <form action="/check-vat" method="post" class="space-y-4">
+                <div id="result" class="mb-4 hidden">
+                    <div class="p-4 rounded-md">
+                        <p class="text-center text-lg" id="resultMessage"></p>
+                    </div>
+                </div>
+                <form id="vatForm" action="/check-vat" method="post" class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700">Country code:</label>
                         <input type="text" name="country_code" 
@@ -150,6 +159,51 @@ async def get_form():
                 </form>
             </div>
         </div>
+        <script>
+            document.getElementById('vatForm').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const formData = new FormData(e.target);
+                
+                try {
+                    const response = await fetch('/check-vat', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const contentType = response.headers.get('content-type');
+                    const resultDiv = document.getElementById('result');
+                    const resultMessage = document.getElementById('resultMessage');
+                    resultDiv.className = 'mb-4';  // Show the result div
+                    
+                    if (contentType && contentType.includes('application/pdf')) {
+                        // If PDF response, download it
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'vat_verification.pdf';
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        window.URL.revokeObjectURL(url);
+                        
+                        resultDiv.className = 'mb-4 bg-green-100';
+                        resultMessage.textContent = 'VAT number is active. Downloading verification report...';
+                    } else {
+                        // If JSON response, show the message
+                        const data = await response.json();
+                        resultDiv.className = 'mb-4 bg-red-100';
+                        resultMessage.textContent = data.message;
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    const resultDiv = document.getElementById('result');
+                    const resultMessage = document.getElementById('resultMessage');
+                    resultDiv.className = 'mb-4 bg-red-100';
+                    resultMessage.textContent = 'An error occurred while verifying the VAT number.';
+                }
+            });
+        </script>
     </body>
     </html>
     """)
@@ -160,6 +214,10 @@ async def check_vat(country_code: str = Form(...), vat_number: str = Form(...)):
     
     try:
         is_valid, message = checker.check_vat(country_code, vat_number)
+        
+        if not is_valid:
+            return JSONResponse(content={"message": message})
+            
         pdf_content = checker.generate_pdf_report(country_code, vat_number, is_valid, message)
         
         filename = f'vat_check_{country_code}_{vat_number}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
