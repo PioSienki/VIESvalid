@@ -1,23 +1,12 @@
+# index.py
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import HTMLResponse
 import requests
 import re
 from datetime import datetime
 from fpdf import FPDF
-import io
 
 app = FastAPI()
-
-class PDF(FPDF):
-    def __init__(self):
-        super().__init__()
-        # Dodanie obsługi polskich znaków
-        self.add_page()
-        self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
-        self.set_font('DejaVu', '', 12)
-
-    def footer(self):
-        pass
 
 class ViesVatChecker:
     def __init__(self):
@@ -62,26 +51,20 @@ class ViesVatChecker:
             return False, f"Błąd połączenia z API: {str(e)}"
 
     def generate_pdf_report(self, country_code, vat_number, is_valid, message):
-        # Użycie standardowej czcionki Arial zamiast DejaVu
         pdf = FPDF()
         pdf.add_page()
         pdf.set_font('Arial', '', 12)
         
-        # Unikamy polskich znaków w stałych tekstach
         pdf.cell(0, 10, 'Raport sprawdzenia numeru VAT w systemie VIES', 0, 1, 'C')
         pdf.ln(10)
         
-        # Teksty bez polskich znaków
         pdf.cell(0, 10, f'Data sprawdzenia: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1)
         pdf.cell(0, 10, f'Kraj: {country_code}', 0, 1)
         pdf.cell(0, 10, f'Numer VAT: {vat_number}', 0, 1)
         pdf.cell(0, 10, f'Status: {("Aktywny" if is_valid else "Nieaktywny")}', 0, 1)
         pdf.cell(0, 10, 'Informacja: ' + ('Numer VAT jest aktywny' if is_valid else 'Numer VAT jest nieaktywny'), 0, 1)
         
-        # Używamy bufora pamięci zamiast pliku
-        pdf_buffer = io.BytesIO()
-        pdf.output(pdf_buffer)
-        return pdf_buffer.getvalue()
+        return pdf.output(dest='S').encode('latin-1')
 
 @app.get("/")
 async def get_form():
@@ -128,12 +111,12 @@ async def check_vat(country_code: str = Form(...), vat_number: str = Form(...)):
     
     try:
         is_valid, message = checker.check_vat(country_code, vat_number)
-        pdf_bytes = checker.generate_pdf_report(country_code, vat_number, is_valid, message)
+        pdf_content = checker.generate_pdf_report(country_code, vat_number, is_valid, message)
         
         filename = f'vat_check_{country_code}_{vat_number}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
         
         return Response(
-            content=pdf_bytes,
+            content=pdf_content,
             media_type="application/pdf",
             headers={
                 'Content-Disposition': f'attachment; filename="{filename}"'
