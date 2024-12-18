@@ -1,3 +1,4 @@
+# index.py
 from fastapi import FastAPI, Form, HTTPException, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 import requests
@@ -15,43 +16,48 @@ class ViesVatChecker:
         return re.sub(r'[^A-Z0-9]', '', vat_number.upper())
     
     def format_xml(self, xml_string):
-        """Format XML string with proper indentation and line wrapping"""
+        """Format XML string for PDF display with strict width control"""
         try:
+            # Remove excess whitespace and format basic structure
+            xml_string = re.sub(r'\s+', ' ', xml_string)
+            xml_string = re.sub(r'> <', '>\n<', xml_string)
+            
             lines = xml_string.split('\n')
             formatted_lines = []
             indent = 0
+            max_width = 80  # Maximum line width
+            
             for line in lines:
                 line = line.strip()
-                if not line:  # Skip empty lines
+                if not line:
                     continue
-                    
+                
+                # Decrease indent for closing tags
                 if line.startswith('</'):
-                    indent -= 1
+                    indent = max(0, indent - 1)
                 
-                formatted_line = '  ' * indent + line
+                # Add indentation
+                indented_line = '  ' * indent + line
                 
-                if len(formatted_line) > 90:
-                    parts = []
-                    current_part = ''
-                    words = formatted_line.split(' ')
-                    for word in words:
-                        if len(current_part) + len(word) > 90:
-                            parts.append(current_part)
-                            current_part = '  ' * (indent + 1) + word
-                        else:
-                            current_part += ' ' + word if current_part else word
-                    if current_part:
-                        parts.append(current_part)
-                    formatted_lines.extend(parts)
-                else:
-                    formatted_lines.append(formatted_line)
-                
-                if not line.startswith('</') and not line.endswith('/>') and not line.endswith('</'):
-                    indent += 1
+                # Split long lines
+                while len(indented_line) > max_width:
+                    split_point = indented_line.rfind(' ', 0, max_width)
+                    if split_point == -1:
+                        split_point = max_width
                     
+                    formatted_lines.append(indented_line[:split_point])
+                    indented_line = '  ' * (indent + 1) + indented_line[split_point:].lstrip()
+                
+                formatted_lines.append(indented_line)
+                
+                # Increase indent for opening tags
+                if not line.startswith('</') and not line.endswith('/>'):
+                    indent += 1
+                
             return formatted_lines
         except:
-            return xml_string.split('\n')
+            # Fallback to basic formatting if something goes wrong
+            return [line.strip() for line in xml_string.split('\n') if line.strip()]
 
     def parse_vies_response(self, xml_text):
         try:
@@ -110,42 +116,47 @@ class ViesVatChecker:
 
     def generate_pdf_report(self, country_code, vat_number, is_valid, message):
         pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.set_auto_page_break(auto=True, margin=20)
         pdf.add_page()
-        pdf.set_margins(10, 10, 10)
+        pdf.set_margins(20, 20, 20)
         pdf.set_font('Arial', '', 12)
         
+        # Header
         pdf.cell(0, 10, 'VAT Number Verification Report - VIES System', 0, 1, 'C')
-        pdf.ln(10)
+        pdf.ln(5)
         
+        # Main information
         pdf.cell(0, 10, f'Check Date: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1)
         pdf.cell(0, 10, f'Country: {country_code}', 0, 1)
         pdf.cell(0, 10, f'VAT Number: {vat_number}', 0, 1)
         pdf.cell(0, 10, f'Status: Active', 0, 1)
         
+        # Company details
         pdf.ln(5)
         for line in message.split('\n'):
             if line.strip():
                 pdf.cell(0, 8, line.strip(), 0, 1)
         
-        pdf.ln(10)
+        # API Communication Log
+        pdf.ln(5)
         pdf.cell(0, 10, 'API Communication Log', 0, 1)
         
-        pdf.set_font('Courier', '', 7)
-        line_height = 3.5
+        # Use smaller font for XML
+        pdf.set_font('Courier', '', 6)
+        line_height = 3
         
+        # SOAP Request
         pdf.cell(0, 8, 'SOAP Request:', 0, 1)
         request_lines = self.format_xml(self.last_request)
         for line in request_lines:
-            if line.strip():
-                pdf.cell(0, line_height, line, 0, 1)
+            pdf.cell(0, line_height, line, 0, 1)
         
-        pdf.ln(5)
+        # SOAP Response
+        pdf.ln(3)
         pdf.cell(0, 8, 'SOAP Response:', 0, 1)
         response_lines = self.format_xml(self.last_response)
         for line in response_lines:
-            if line.strip():
-                pdf.cell(0, line_height, line, 0, 1)
+            pdf.cell(0, line_height, line, 0, 1)
         
         return pdf.output(dest='S').encode('latin-1')
 
@@ -210,7 +221,13 @@ async def get_form():
                         const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
                         a.href = url;
-                        a.download = 'vat_verification.pdf';
+                        
+                        // Get filename from Content-Disposition header
+                        const contentDisposition = response.headers.get('Content-Disposition');
+                        const filenameMatch = contentDisposition && contentDisposition.match(/filename="(.+)"/);
+                        const filename = filenameMatch ? filenameMatch[1] : 'vat_verification.pdf';
+                        
+                        a.download = filename;
                         document.body.appendChild(a);
                         a.click();
                         document.body.removeChild(a);
@@ -245,23 +262,29 @@ async def check_vat(country_code: str = Form(...), vat_number: str = Form(...)):
         
         if not is_valid:
             return JSONResponse(content={"message": message})
-            
-        company_name = ""
+        
+        # Extract company name from message
+        company_name = "unknown"
         for line in message.split('\n'):
             if line.startswith('Name:'):
                 company_name = line.replace('Name:', '').strip()
-                company_name = re.sub(r'[<>:"/\\|?*]', '', company_name)
+                # Clean company name from invalid characters
+                company_name = re.sub(r'[^a-zA-Z0-9\s-]', '', company_name)
+                company_name = company_name.replace(' ', '-')
                 break
         
         pdf_content = checker.generate_pdf_report(country_code, vat_number, is_valid, message)
         
-        filename = f'VIES_{country_code}{vat_number}_{company_name}.pdf'
+        # New filename format
+        safe_company_name = company_name[:30]  # Limit company name length
+        filename = f'VIES_{country_code}_{vat_number}_{safe_company_name}.pdf'
         
         return Response(
             content=pdf_content,
             media_type="application/pdf",
             headers={
-                'Content-Disposition': f'attachment; filename="{filename}"'
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Access-Control-Expose-Headers': 'Content-Disposition'
             }
         )
     
