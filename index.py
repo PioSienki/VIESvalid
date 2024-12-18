@@ -4,8 +4,20 @@ import requests
 import re
 from datetime import datetime
 from fpdf import FPDF
+import io
 
 app = FastAPI()
+
+class PDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        # Dodanie obsługi polskich znaków
+        self.add_page()
+        self.add_font('DejaVu', '', 'DejaVuSansCondensed.ttf', uni=True)
+        self.set_font('DejaVu', '', 12)
+
+    def footer(self):
+        pass
 
 class ViesVatChecker:
     def __init__(self):
@@ -50,20 +62,26 @@ class ViesVatChecker:
             return False, f"Błąd połączenia z API: {str(e)}"
 
     def generate_pdf_report(self, country_code, vat_number, is_valid, message):
+        # Użycie standardowej czcionki Arial zamiast DejaVu
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font('Helvetica', '', 12)
+        pdf.set_font('Arial', '', 12)
         
+        # Unikamy polskich znaków w stałych tekstach
         pdf.cell(0, 10, 'Raport sprawdzenia numeru VAT w systemie VIES', 0, 1, 'C')
         pdf.ln(10)
         
+        # Teksty bez polskich znaków
         pdf.cell(0, 10, f'Data sprawdzenia: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}', 0, 1)
         pdf.cell(0, 10, f'Kraj: {country_code}', 0, 1)
         pdf.cell(0, 10, f'Numer VAT: {vat_number}', 0, 1)
-        pdf.cell(0, 10, f'Status: {"Aktywny" if is_valid else "Nieaktywny"}', 0, 1)
-        pdf.cell(0, 10, f'Informacja: {message}', 0, 1)
+        pdf.cell(0, 10, f'Status: {("Aktywny" if is_valid else "Nieaktywny")}', 0, 1)
+        pdf.cell(0, 10, 'Informacja: ' + ('Numer VAT jest aktywny' if is_valid else 'Numer VAT jest nieaktywny'), 0, 1)
         
-        return pdf.output(dest='S').encode('latin-1')
+        # Używamy bufora pamięci zamiast pliku
+        pdf_buffer = io.BytesIO()
+        pdf.output(pdf_buffer)
+        return pdf_buffer.getvalue()
 
 @app.get("/")
 async def get_form():
@@ -95,7 +113,7 @@ async def get_form():
                     </div>
                     <button type="submit" 
                             class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                        Sprawdź
+                        Sprawdz
                     </button>
                 </form>
             </div>
