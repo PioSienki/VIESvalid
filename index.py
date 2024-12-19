@@ -175,26 +175,3 @@ async def check_vat(country_code: str = Form(...), vat_number: str = Form(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# requirements.txt
-fastapi==0.104.1
-python-multipart==0.0.6
-uvicorn==0.24.0
-requests==2.31.0
-fpdf==1.7.2
-
-# vercel.json
-{
-    "version": 2,
-    "builds": [
-        {
-            "src": "index.py",
-            "use": "@vercel/python"
-        }
-    ],
-    "routes": [
-        {
-            "src": "/(.*)",
-            "dest": "index.py"
-        }
-    ]
-}
